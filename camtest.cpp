@@ -19,11 +19,15 @@
 #include <time.h>
 #include <math.h>
 #include <pthread.h>
+#include <linux/fb.h>
+#include <termios.h> 
+#include <sys/mman.h>
 #pragma pack(1) 
 
-#define SERV_PORT 3003
+#define SERV_PORT 3008
 #define BUFFER_LENGTH_BMP 640*512*3+40+14
-#define BUFFER_SEND 40000
+#define PWM_IOCTL_SET_FREQ 1
+#define PWM_IOCTL_STOP 0
 
 typedef struct __BITMAPFILEHEADER__
 {
@@ -99,8 +103,7 @@ int rawTobmp(char *pbuf, char *pRGBbuf)
 
 		pRGBbuf[k+2] = pRGBbuf[k+2]|((pRGBbuf[k+2]&0x38)>>3);
 		pRGBbuf[k+1] = pRGBbuf[k+1]|((pRGBbuf[k+1]&0x0c)>>2);
-		pRGBbuf[k] = pRGBbuf[k]|((pRGBbuf[k]&0x38)>>3);
-		
+		pRGBbuf[k] = pRGBbuf[k]|((pRGBbuf[k]&0x38)>>3);	
     }
     return EXIT_SUCCESS;
 }
@@ -315,13 +318,138 @@ private:
 	int fd;
 };
 
+pthread_t thread[2];
+int listenfd,connfd;
+struct sockaddr_in server_addr,client_addr;
+int n=0;
+socklen_t client_addr_len = sizeof(struct sockaddr);
+char buf[BUFFER_LENGTH_BMP] = {};
+static int fd = -1;
+
+void thread_wait(void){
+	if(thread[0] !=0){
+		pthread_join(thread[0],NULL);
+	}
+	if(thread[1] !=0){  
+		pthread_join(thread[1],NULL);
+	}
+}
+
+void close_buzzer(){
+	if(fd >= 0){
+		ioctl(fd, PWM_IOCTL_STOP);
+		close(fd);
+		fd = -1;
+	}
+}//¹Ø±Õ·äÃùÆ÷Éè±¸
+
+void open_buzzer(){
+	fd = open("/dev/pwm", 0); 
+    if (fd < 0)  
+    { 
+        perror("open pwm_buzzer device"); 
+        exit(1); 
+    } 
+    atexit(close_buzzer);
+}//´ò¿ª·äÃùÆ÷Éè±¸
+
+void set_buzzer_freq(int freq){
+    int ret = ioctl(fd, PWM_IOCTL_SET_FREQ, freq); 
+    if(ret < 0) 
+    { 
+        perror("set the frequency of the buzzer"); 
+        exit(1); 
+    } 
+}//ÉèÖÃ·äÃùÆ÷ÆµÂÊ
+
+void stop_buzzer(void){ 
+    int ret = ioctl(fd, PWM_IOCTL_STOP); 
+    if(ret < 0) 
+    { 
+        perror("stop the buzzer error.\n"); 
+        exit(-1); 
+    } 
+}//Í£Ö¹·äÃùÆ÷
+
+void Beep(int freq, int t1, int t2){ 
+    printf("freq=%d,each_ms=%d,ntimes=%d\n", freq, t1, t2); 
+    open_buzzer(); 
+    int i=0; 
+    for(i=0; i<t2;++i) 
+    { 
+        set_buzzer_freq(freq); 
+        usleep(t1*100); 
+        stop_buzzer(); 
+        usleep(t1*100);
+    } 
+    close_buzzer(); 
+}//ÒÔfreqÎªÆµÂÊ
+
+void buzzer_on(){
+		Beep(10000, 500, 25);
+}
+
+void *video(void* str){
+	TFrameBuffer FrameBuffer;
+	TVideo Video;
+	for (;;) {
+		Video.FetchPicture();
+		FrameBuffer.DrawRect(Video);
+		//change raw to bmp
+		if(rawTobmp((char*)Video.Addr, buf)==1){
+			perror("raw to bmp");
+		}
+		// while(1){
+		// 	n = send(connfd,buf+m,BUFFER_SEND,0);
+		// 	m += n;
+		// 	if(n == -1){
+		// 		perror("fail to reply");
+		// 		exit(1);
+		// 	}
+		// 	if(m>=BUFFER_LENGTH_BMP) break;
+		// }
+		printf("%d\n", sizeof(buf));
+		n = send(connfd,buf,BUFFER_LENGTH_BMP,0);
+		sleep(6);
+	}
+	return (void*)NULL;
+}
+
+void *rcntl(void* str){
+	char buf2[5];
+	printf("dasdasdasd\n");
+	while(1){
+		n = recv(connfd,buf2,sizeof(buf2),0);
+		buf2[n]='\0';
+		if(n == -1){
+			throw TError("recv failed");
+		}
+		if(strcmp(buf2,"1")==0){
+			printf("%s\n", buf2);
+			buzzer_on();
+		}
+	}
+}
+
+void thread_create(void){
+	int temp;
+	memset(&thread, 0, sizeof(thread));
+
+    if((temp = pthread_create(&thread[0], NULL, video, NULL)) != 0){
+		throw TError("create thread failed");
+		return;
+	}
+    if((temp = pthread_create(&thread[1], NULL, rcntl, NULL)) != 0){
+		throw TError("create thread failed");
+		return;
+	}
+}
+
+
+
 int main(int argc, char **argv)
 {
-	struct sockaddr_in server_addr,client_addr;
-	int listenfd,connfd;
-	int n=0;
-	socklen_t client_addr_len = sizeof(struct sockaddr);
-	char buf[BUFFER_LENGTH_BMP] = {};
+	
 
 	//create listenfd
 	listenfd = socket(AF_INET,SOCK_STREAM,0);
@@ -353,12 +481,11 @@ int main(int argc, char **argv)
 	//strcpy(buf2,"1111111");
 	//do capture
 	try {
-		TFrameBuffer FrameBuffer;
+		/*TFrameBuffer FrameBuffer;
 		TVideo Video;
 		for (;;) {
 			Video.FetchPicture();
-			FrameBuffer.DrawRect(Video);
-			
+			// FrameBuffer.DrawRect(Video);
 			//change raw to bmp
 			if(rawTobmp((char*)Video.Addr, buf)==1){
 				perror("raw to bmp");
@@ -375,10 +502,12 @@ int main(int argc, char **argv)
 
 			printf("%d\n", sizeof(buf));
 			n = send(connfd,buf,BUFFER_LENGTH_BMP,0);
-			bzero(buf,sizeof(buf));
-			sleep(7);
-		}
+			sleep(6);
+		}*/
 		// printf("%s\n", Video.Addr);
+		thread_create();
+		thread_wait();
+
 	} catch (TError & e) {
 		e.Output();
 		return 1;
@@ -389,3 +518,5 @@ int main(int argc, char **argv)
 		}
 	return 0;
 }
+
+
