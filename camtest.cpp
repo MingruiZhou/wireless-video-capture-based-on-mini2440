@@ -18,9 +18,10 @@
 #include <arpa/inet.h>
 #include <time.h>
 #include <math.h>
+#include <pthread.h>
 #pragma pack(1) 
 
-#define SERV_PORT 3002
+#define SERV_PORT 3003
 #define BUFFER_LENGTH_BMP 640*512*3+40+14
 #define BUFFER_SEND 40000
 
@@ -78,7 +79,7 @@ int rawTobmp(char *pbuf, char *pRGBbuf)
     int w = 640;
     int h = 512;
     
-    int i,k,x=0;
+    int i,k;
 
     BITMAPFILEHEADER bmphead;
     BITMAPINFOHEADER infohead;
@@ -99,10 +100,8 @@ int rawTobmp(char *pbuf, char *pRGBbuf)
 		pRGBbuf[k+2] = pRGBbuf[k+2]|((pRGBbuf[k+2]&0x38)>>3);
 		pRGBbuf[k+1] = pRGBbuf[k+1]|((pRGBbuf[k+1]&0x0c)>>2);
 		pRGBbuf[k] = pRGBbuf[k]|((pRGBbuf[k]&0x38)>>3);
-		x++;
 		
     }
-    printf("%d",x);
     return EXIT_SUCCESS;
 }
 
@@ -200,9 +199,9 @@ protected:
 	TRect(const TRect &);
 	TRect & operator=( const TRect &);
 
-protected:
-	int Size;
+public:
 	unsigned char *Addr;
+	int Size;
 	int Width, Height, LineLen;
 	unsigned BPP;
 };
@@ -298,21 +297,6 @@ public:
 		// }
 		// fwrite(Addr,sizeof(char),Size,fp);
 		// fclose(fp);
-		printf("%s\n", Video.Addr);
-
-		//change raw to bmp
-		if(rawTobmp((char*)Video.Addr, buf)==1){
-			perror("raw to bmp");
-		}
-		while(1){
-			n = send(connfd,buf+m,BUFFER_SEND,0);
-			m += n;
-			if(n == -1){
-				perror("fail to reply");
-				exit(1);
-			}
-			if(m>=BUFFER_LENGTH_BMP) break;
-		}
 		return true;
 	}
 
@@ -335,7 +319,7 @@ int main(int argc, char **argv)
 {
 	struct sockaddr_in server_addr,client_addr;
 	int listenfd,connfd;
-	int n=0,m=0;
+	int n=0;
 	socklen_t client_addr_len = sizeof(struct sockaddr);
 	char buf[BUFFER_LENGTH_BMP] = {};
 
@@ -366,38 +350,42 @@ int main(int argc, char **argv)
 		perror("accept");
 		exit(1);
 	}
-
+	//strcpy(buf2,"1111111");
 	//do capture
 	try {
 		TFrameBuffer FrameBuffer;
 		TVideo Video;
-		// for (;;) {
-		Video.FetchPicture();
-		FrameBuffer.DrawRect(Video);
-		// }
-		// printf("%s\n", Video.Addr);
+		for (;;) {
+			Video.FetchPicture();
+			FrameBuffer.DrawRect(Video);
+			
+			//change raw to bmp
+			if(rawTobmp((char*)Video.Addr, buf)==1){
+				perror("raw to bmp");
+			}
+			// while(1){
+			// 	n = send(connfd,buf+m,BUFFER_SEND,0);
+			// 	m += n;
+			// 	if(n == -1){
+			// 		perror("fail to reply");
+			// 		exit(1);
+			// 	}
+			// 	if(m>=BUFFER_LENGTH_BMP) break;
+			// }
 
-		// //change raw to bmp
-		// if(rawTobmp((char*)Video.Addr, buf)==1){
-		// 	perror("raw to bmp");
-		// }
-		// while(1){
-		// 	n = send(connfd,buf+m,BUFFER_SEND,0);
-		// 	m += n;
-		// 	if(n == -1){
-		// 		perror("fail to reply");
-		// 		exit(1);
-		// 	}
-		// 	if(m>=BUFFER_LENGTH_BMP) break;
-		// }
-
-		if(close(listenfd)==-1 || close(connfd)==-1){//关闭监听
-			perror("fail to close");
-			exit(1);
+			printf("%d\n", sizeof(buf));
+			n = send(connfd,buf,BUFFER_LENGTH_BMP,0);
+			bzero(buf,sizeof(buf));
+			sleep(7);
 		}
+		// printf("%s\n", Video.Addr);
 	} catch (TError & e) {
 		e.Output();
 		return 1;
 	}
+	if(close(listenfd)==-1 || close(connfd)==-1){//关闭监听
+			perror("fail to close");
+			exit(1);
+		}
 	return 0;
 }
